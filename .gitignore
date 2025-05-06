@@ -1,0 +1,29 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+Cargo.lock
+
+# Generated files
+*.pdb
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# IDE-specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment files
+.env
+*.env.local
+
+# Output directories
+/output/
+/log/
+
+# OS-specific files
+.DS_Store
+Thumbs.db

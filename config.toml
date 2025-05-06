@@ -1,0 +1,142 @@
+# Paper2Code Configuration
+
+# OpenAI API Configuration
+# Comment out this section to disable OpenAI integration
+[openai]
+api_key = "your_openai_api_key_here"  # Set your OpenAI API key
+model = "gpt-4-turbo"  # Other options: gpt-4, gpt-3.5-turbo
+max_tokens = 4096
+temperature = 0.2
+timeout_seconds = 120
+max_concurrent_requests = 3
+
+# Claude API Configuration
+# Comment out this section to disable Claude integration
+[claude]
+api_key = "your_claude_api_key_here"  # Set your Claude API key
+model = "claude-3-sonnet-20240229"  # Other options: claude-3-opus-20240229, claude-3-haiku-20240307
+max_tokens = 4096
+temperature = 0.2
+timeout_seconds = 120
+max_concurrent_requests = 3
+
+# LLM Strategy Configuration
+[llm_strategy]
+# Available strategies:
+# - "adaptive": Use the best LLM for each task based on preferences
+# - "openai_only": Use only OpenAI
+# - "claude_only": Use only Claude
+# - "openai_first": Use OpenAI, then refine with Claude
+# - "claude_first": Use Claude, then refine with OpenAI
+# - "compare_and_merge": Use both and merge results
+strategy_type = "adaptive"
+
+# Preferences for adaptive strategy (only used if strategy_type = "adaptive")
+# Available preferences:
+# - "prefer_openai": Try OpenAI first, fallback to Claude
+# - "prefer_claude": Try Claude first, fallback to OpenAI
+# - "use_openai": Use only OpenAI for this task
+# - "use_claude": Use only Claude for this task
+code_detection_preference = "prefer_claude"  # Claude is better at identifying code in text
+code_improvement_preference = "prefer_openai"  # OpenAI is better at improving code structure
+code_generation_preference = "prefer_openai"  # OpenAI is better at code generation
+documentation_preference = "prefer_claude"  # Claude is better at documentation
+bug_fixing_preference = "prefer_openai"  # OpenAI is better at bug fixing
+
+# PDF Processing Configuration
+[pdf]
+chunk_size = 1000  # Size of text chunks for processing
+
+# Code Detection Configuration
+[code_detection]
+min_confidence = 0.7  # Minimum confidence score for code block detection
+min_lines = 3  # Minimum number of lines for a valid code block
+
+# Output Configuration
+[output]
+path = "output"  # Output directory for generated code
+overwrite = false  # Whether to overwrite existing files
+
+# Prompt Templates
+[prompt]
+extraction_template = """
+You are a skilled programmer tasked with converting research paper code snippets into fully executable code.
+
+The following code was extracted from a research paper:
+
+```{{LANGUAGE}}
+{{CODE}}
+```
+
+Please convert this code snippet into fully executable {{LANGUAGE}} code. Follow these guidelines:
+
+1. Fill in any missing functions, imports, or definitions
+2. Add appropriate error handling
+3. Make the code work as a standalone program
+4. Add clear comments explaining how the code works
+5. Preserve the original algorithm and approach
+6. Add code documentation following best practices for {{LANGUAGE}}
+
+Your output should be ONLY the complete, executable code. Do not include any explanations outside of code comments.
+"""
+
+detection_template = """
+You are a skilled programmer tasked with identifying and extracting code from research papers.
+
+The following text was extracted from a research paper:
+
+```
+{{TEXT}}
+```
+
+Please identify any code blocks in this text. For each code block:
+1. Extract the code, preserving its structure
+2. Fix any obvious formatting issues, indentation, or syntax errors
+3. Identify the programming language if possible
+4. Present the code as a properly formatted code block
+
+Your output should be ONLY the extracted, formatted code blocks. 
+Return each block with the language identified (if possible) in markdown code block format.
+"""
+
+documentation_template = """
+You are a skilled technical writer tasked with documenting code from a research paper.
+
+The following code was extracted and converted from a research paper:
+
+```{{LANGUAGE}}
+{{CODE}}
+```
+
+Please add comprehensive documentation to this code. Follow these guidelines:
+
+1. Add a detailed header comment explaining the purpose of the code
+2. Document each function with clear descriptions of parameters and return values
+3. Explain complex algorithms or data structures
+4. Add inline comments for non-obvious code sections
+5. Follow documentation best practices for {{LANGUAGE}}
+6. Do not change the functionality of the code
+
+Your output should be ONLY the documented code.
+"""
+
+bug_fixing_template = """
+You are a skilled programmer tasked with fixing bugs in code extracted from a research paper.
+
+The following code was extracted from a research paper:
+
+```{{LANGUAGE}}
+{{CODE}}
+```
+
+This code may contain bugs, errors, or inconsistencies. Please fix any issues with this code while preserving the original functionality and intent. Follow these guidelines:
+
+1. Identify and fix syntax errors
+2. Correct logical bugs
+3. Handle edge cases appropriately
+4. Ensure the code is robust and works as intended
+5. Add appropriate error handling if missing
+6. Add comments explaining your fixes
+
+Your output should be ONLY the fixed, executable code.
+""" 

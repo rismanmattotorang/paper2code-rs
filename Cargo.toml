@@ -1,0 +1,82 @@
+[package]
+name = "paper2code-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Risman Adnan <rismana@gmail.com>"]
+description = "Convert research paper code snippets to executable code"
+repository = "https://github.com/yourusername/paper2code-rs"
+license = "MIT"
+
+[dependencies]
+# CLI and configuration
+clap = { version = "4.5", features = ["derive"] }
+config = "0.13"
+dotenv = "0.15"
+
+# PDF processing
+lopdf = "0.31"
+pdf-extract = "0.7"
+
+# Text processing
+regex = "1.9"
+unicode-segmentation = "1.10"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+futures = "0.3"
+
+# HTTP client and serialization
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Tracing and logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tracing-appender = "0.2"
+
+# LLM integrations
+async-trait = "0.1"
+
+# Utils
+uuid = { version = "1.7", features = ["v4"] }
+tempfile = "3.8"
+dirs = "5.0"
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+rayon = "1.7"
+derive_builder = "0.12"
+sha2 = "0.10"
+base64 = "0.21"
+
+# Additional dependencies
+bytes = "1.5"
+lru = "0.12"
+num_cpus = "1.16"
+sys-info = "0.9"
+
+[dev-dependencies]
+criterion = "0.5"
+mockall = "0.11"
+tempfile = "3.8"
+tokio-test = "0.4"
+pretty_assertions = "1.4"
+
+[build-dependencies]
+built = "0.7"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true
+panic = "abort"
+
+[features]
+default = []
+testing = []

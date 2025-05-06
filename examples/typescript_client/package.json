@@ -1,0 +1,26 @@
+{
+  "name": "paper2code-ts-client",
+  "version": "0.1.0",
+  "description": "TypeScript client for paper2code-rs",
+  "main": "dist/paper2code.js",
+  "types": "dist/paper2code.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "start": "ts-node src/example.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "paper2code",
+    "llm",
+    "code-extraction"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@types/node": "^18.0.0"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.1",
+    "typescript": "^5.0.0"
+  }
+} 
