@@ -2,19 +2,57 @@
  * TypeScript client for the paper2code-rs library
  * 
  * This client provides a TypeScript/JavaScript interface to the paper2code-rs library.
- * It uses child_process to call the paper2code-rs CLI and parses the output.
+ * It uses child_process to call the paper2code-rs CLI and processes the output to provide
+ * a consistent API regardless of CLI version or output format.
  */
 
-// Import directly from JavaScript without relying on type definitions
-// This approach is simpler but doesn't provide type checking for node modules
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const childProcess = require('child_process');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const fs = require('fs');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const path = require('path');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const os = require('os');
+// Node.js modules with proper TypeScript imports
+import * as childProcess from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+
+/**
+ * Custom error class for Paper2Code client errors
+ */
+export class Paper2CodeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'Paper2CodeError';
+    // Restore prototype chain
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Error thrown when the paper2code-rs binary is not found
+ */
+export class BinaryNotFoundError extends Paper2CodeError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BinaryNotFoundError';
+  }
+}
+
+/**
+ * Error thrown when a command fails to execute
+ */
+export class CommandExecutionError extends Paper2CodeError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CommandExecutionError';
+  }
+}
+
+/**
+ * Error thrown when invalid input is provided
+ */
+export class InvalidInputError extends Paper2CodeError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidInputError';
+  }
+}
 
 /**
  * Code block extracted from a document
@@ -30,13 +68,35 @@ export interface CodeBlock {
 }
 
 /**
+ * Static method to extract a code block from text using regex
+ */
+export function extractCodeBlockFromText(text: string): CodeBlock {
+  // Try to determine language from markdown code block format
+  const langMatch = text.match(/```(\w+)/);
+  const language = langMatch ? langMatch[1] : undefined;
+  
+  // Extract content between code markers
+  const contentMatch = text.match(/```(?:\w+)?\n([\s\S]+?)\n```/s);
+  const content = contentMatch ? contentMatch[1] : text;
+  
+  return {
+    content,
+    language,
+    line_start: 0,
+    line_end: content.split('\n').length,
+    confidence: 1.0,
+    metadata: {}
+  };
+}
+
+/**
  * Result from code extraction
  */
 export interface ExtractionResult {
   code_blocks: CodeBlock[];
   source_file?: string;
-  total_pages?: number;
-  processing_time_ms: number;
+  raw_output?: string;
+  success: boolean;
 }
 
 /**
@@ -44,11 +104,8 @@ export interface ExtractionResult {
  */
 export interface OpenAIConfig {
   api_key: string;
-  model: string;
-  max_tokens: number;
-  temperature: number;
-  timeout_seconds: number;
-  max_concurrent_requests: number;
+  model?: string;
+  timeout_seconds?: number;
 }
 
 /**
@@ -56,11 +113,8 @@ export interface OpenAIConfig {
  */
 export interface ClaudeConfig {
   api_key: string;
-  model: string;
-  max_tokens: number;
-  temperature: number;
-  timeout_seconds: number;
-  max_concurrent_requests: number;
+  model?: string;
+  timeout_seconds?: number;
 }
 
 /**
@@ -69,26 +123,37 @@ export interface ClaudeConfig {
 export interface AppConfig {
   openai?: OpenAIConfig;
   claude?: ClaudeConfig;
-  default_provider: string;
-  output_dir: string;
-  parallel_requests: number;
-  chunk_size: number;
+  output_dir?: string;
+  raw_config?: string;
+  success?: boolean;
 }
 
 /**
  * Options for extracting code from PDF
  */
-export interface PdfExtractionOptions {
+export interface ExtractOptions {
   outputDir?: string;
-  pageRange?: string;
+  language?: string;
+  strategy?: string;
+  force?: boolean;
 }
 
 /**
- * Options for generating code
+ * Options for generating a configuration file
  */
-export interface CodeGenerationOptions {
-  language?: string;
-  outputDir?: string;
+export interface ConfigOptions {
+  generate?: boolean;
+  outputPath?: string;
+  force?: boolean;
+}
+
+/**
+ * Options for testing LLM connectivity
+ */
+export interface TestOptions {
+  openai?: boolean;
+  claude?: boolean;
+  prompt?: string;
 }
 
 /**
@@ -96,14 +161,20 @@ export interface CodeGenerationOptions {
  */
 export class Paper2CodeClient {
   private binaryPath: string;
-
+  private configPath: string;
+  private verbose: boolean;
+  
   /**
    * Create a new Paper2CodeClient
    * 
    * @param binaryPath Path to the paper2code-rs binary
+   * @param configPath Path to the configuration file
+   * @param verbose Whether to enable verbose output
    */
-  constructor(binaryPath: string = 'paper2code-rs') {
+  constructor(binaryPath: string = 'paper2code-rs', configPath: string = 'config.toml', verbose: boolean = false) {
     this.binaryPath = binaryPath;
+    this.configPath = configPath;
+    this.verbose = verbose;
   }
 
   /**
@@ -111,10 +182,11 @@ export class Paper2CodeClient {
    */
   public async checkBinary(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      childProcess.exec(`${this.binaryPath} --version`, (error: Error | null) => {
+      childProcess.exec(`${this.binaryPath} --version`, (error: Error | null, stdout: string, stderr: string) => {
         if (error) {
-          reject(new Error(`Failed to run paper2code-rs: ${error.message}. Make sure it's installed and on your PATH.`));
+          reject(new BinaryNotFoundError(`Failed to run paper2code-rs: ${error.message}. Make sure it's installed and on your PATH.`));
         } else {
+          console.log(`Using paper2code-rs version: ${stdout.trim()}`);
           resolve();
         }
       });
@@ -122,16 +194,31 @@ export class Paper2CodeClient {
   }
 
   /**
-   * Run a paper2code-rs command and return the JSON output
+   * Run a paper2code-rs command and return the processed output
    * 
    * @param args Command arguments
    * @param stdinData Optional data to pass to stdin
-   * @returns Parsed JSON output
+   * @returns Processed command output
    */
   private async runCommand<T>(args: string[], stdinData?: string): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      // Add JSON format option
-      const allArgs = [...args, '--format', 'json'];
+      // Prepare command with global options
+      let allArgs: string[] = [];
+      
+      // Add config path if not default
+      if (this.configPath !== 'config.toml') {
+        allArgs.push('--config', this.configPath);
+      }
+      
+      // Add verbose flag if enabled
+      if (this.verbose) {
+        allArgs.push('--verbose');
+      }
+      
+      // Add command-specific arguments
+      allArgs = [...allArgs, ...args];
+      
+      console.log(`Running command: ${this.binaryPath} ${allArgs.join(' ')}`);
       
       const cmd = childProcess.spawn(this.binaryPath, allArgs);
       
@@ -153,110 +240,278 @@ export class Paper2CodeClient {
       
       cmd.on('close', (code: number) => {
         if (code !== 0) {
-          reject(new Error(`Command failed with error: ${stderr.trim()}`));
+          reject(new CommandExecutionError(`Command failed with error: ${stderr.trim()}`));
           return;
         }
         
+        // Process output based on command
         try {
+          // Try to parse as JSON first (not likely with current CLI)
           const result = JSON.parse(stdout.trim());
-          resolve(result);
+          resolve(result as T);
         } catch (e) {
-          // Return raw output if not JSON
-          resolve({ output: stdout.trim() } as unknown as T);
+          // If this was an extract command, parse using regex for code blocks
+          if (args[0] === 'extract') {
+            resolve(this.parseExtractOutput(stdout) as unknown as T);
+          } else {
+            // For other commands, return standardized dictionary
+            resolve({
+              output: stdout.trim(),
+              success: true,
+              command: args[0] || ''
+            } as unknown as T);
+          }
         }
+      });
+      
+      cmd.on('error', (err: Error) => {
+        reject(new CommandExecutionError(`Failed to execute command: ${err.message}`));
       });
     });
   }
+  
+  /**
+   * Parse output from extract command to find code blocks
+   * 
+   * @param output Raw output from extract command
+   * @returns Standardized extraction result
+   */
+  private parseExtractOutput(output: string): ExtractionResult {
+    // Initialize result
+    const result: ExtractionResult = {
+      code_blocks: [],
+      raw_output: output,
+      success: true
+    };
+    
+    // Extract code blocks using regex pattern for markdown code blocks
+    const codeBlockPattern = /```(\w*)\n([\s\S]+?)\n```/g;
+    let match;
+    
+    while ((match = codeBlockPattern.exec(output)) !== null) {
+      const language = match[1] || 'unknown';
+      const content = match[2];
+      
+      // Create CodeBlock object
+      const block: CodeBlock = {
+        content,
+        language,
+        line_start: 0,  // We don't have line information
+        line_end: content.split('\n').length,
+        confidence: 1.0,  // We don't have confidence information
+        metadata: {}
+      };
+      
+      // Add to result
+      result.code_blocks.push(block);
+    }
+    
+    return result;
+  }
 
   /**
-   * Extract code from a PDF file
+   * Extract code from a PDF file and return structured results
    * 
    * @param pdfPath Path to the PDF file
-   * @param options Extraction options
-   * @returns Extraction result
+   * @param options Optional parameters for the extraction
+   * @returns Extraction results with code blocks and metadata
    */
   public async extractCodeFromPdf(
     pdfPath: string, 
-    options?: PdfExtractionOptions
+    options?: ExtractOptions
   ): Promise<ExtractionResult> {
-    const args = ['extract', pdfPath];
-    
-    if (options?.outputDir) {
-      args.push('--output', options.outputDir);
-    }
-    
-    if (options?.pageRange) {
-      args.push('--pages', options.pageRange);
-    }
-    
-    return this.runCommand<ExtractionResult>(args);
-  }
-
-  /**
-   * Extract code from text
-   * 
-   * @param text Text containing code snippets
-   * @returns Extraction result
-   */
-  public async extractCodeFromText(text: string): Promise<ExtractionResult> {
-    const args = ['extract', '--from-text'];
-    return this.runCommand<ExtractionResult>(args, text);
-  }
-
-  /**
-   * Test connection to LLM provider
-   * 
-   * @param provider LLM provider (auto, claude, openai)
-   * @returns Test result
-   */
-  public async testLlmConnection(provider: string = 'auto'): Promise<any> {
-    const args = ['test', 'llm', '--provider', provider];
-    return this.runCommand<any>(args);
-  }
-
-  /**
-   * Generate executable code from code snippets
-   * 
-   * @param codeSnippets List of code snippets
-   * @param options Generation options
-   * @returns Generation result
-   */
-  public async generateCode(
-    codeSnippets: string[], 
-    options?: CodeGenerationOptions
-  ): Promise<any> {
-    let tmpFile = '';
-    
     try {
-      // Create a temporary file with the code snippets
-      const tmpDir = os.tmpdir();
-      tmpFile = path.join(tmpDir, `paper2code-${Date.now()}.txt`);
-      
-      // Write code snippets to the temporary file
-      fs.writeFileSync(
-        tmpFile, 
-        codeSnippets.join('\n\n---\n\n')
-      );
-      
-      const args = ['generate', '--input', tmpFile];
-      
-      if (options?.language) {
-        args.push('--language', options.language);
+      // Validate input
+      if (!pdfPath || !pdfPath.trim()) {
+        throw new InvalidInputError('PDF path cannot be empty');
       }
+      
+      if (!fs.existsSync(pdfPath)) {
+        throw new InvalidInputError(`PDF file does not exist: ${pdfPath}`);
+      }
+      
+      await this.checkBinary();
+      
+      const args = ['extract', '--input', pdfPath];
       
       if (options?.outputDir) {
         args.push('--output', options.outputDir);
       }
       
-      return this.runCommand<any>(args);
-    } finally {
-      // Clean up the temporary file if it exists
-      if (tmpFile) {
-        try {
-          fs.unlinkSync(tmpFile);
-        } catch (err) {
-          // Ignore errors in cleanup
+      if (options?.language) {
+        args.push('--language', options.language);
+      }
+      
+      if (options?.strategy) {
+        args.push('--strategy', options.strategy);
+      }
+      
+      if (options?.force) {
+        args.push('--force');
+      }
+      
+      return await this.runCommand<ExtractionResult>(args);
+    } catch (error) {
+      if (error instanceof Paper2CodeError) {
+        throw error;
+      } else {
+        throw new CommandExecutionError(`Failed to extract code from PDF: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  /**
+   * Extract code from text input
+   * 
+   * @param text Text containing code to extract
+   * @param options Optional parameters for the extraction
+   * @returns Extraction result
+   */
+  public async extractCodeFromText(
+    text: string, 
+    options?: ExtractOptions
+  ): Promise<ExtractionResult> {
+    try {
+      // Validate input
+      if (!text || !text.trim()) {
+        throw new InvalidInputError('Text input cannot be empty');
+      }
+      
+      await this.checkBinary();
+      
+      // Create a temporary file for the text
+      const tmpPath = path.join(os.tmpdir(), `paper2code-${Date.now()}.txt`);
+      fs.writeFileSync(tmpPath, text);
+      
+      try {
+        const args = ['extract', '--input', tmpPath];
+        
+        if (options?.outputDir) {
+          args.push('--output', options.outputDir);
         }
+        
+        if (options?.language) {
+          args.push('--language', options.language);
+        }
+        
+        if (options?.strategy) {
+          args.push('--strategy', options.strategy);
+        }
+        
+        if (options?.force) {
+          args.push('--force');
+        }
+        
+        return await this.runCommand<ExtractionResult>(args);
+      } finally {
+        // Clean up the temporary file
+        try {
+          fs.unlinkSync(tmpPath);
+        } catch (e) {
+          console.warn(`Failed to delete temporary file ${tmpPath}:`, e);
+        }
+      }
+    } catch (error) {
+      if (error instanceof Paper2CodeError) {
+        throw error;
+      } else {
+        throw new CommandExecutionError(`Failed to extract code from text: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  /**
+   * Test connection to LLM provider
+   * 
+   * @param options Options for testing LLM connectivity
+   * @returns Test result
+   */
+  public async testLlmConnection(options?: TestOptions): Promise<any> {
+    try {
+      await this.checkBinary();
+      
+      const args = ['test'];
+      
+      if (options?.openai) {
+        args.push('--openai');
+      } else if (options?.claude) {
+        args.push('--claude');
+      }
+      
+      if (options?.prompt) {
+        args.push('--prompt', options.prompt);
+      }
+      
+      return await this.runCommand<any>(args);
+    } catch (error) {
+      if (error instanceof Paper2CodeError) {
+        throw error;
+      } else {
+        throw new CommandExecutionError(`Failed to test LLM connection: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  /**
+   * Generate executable code from code snippets
+   * 
+   * @param codeSnippets Array of code snippets to convert
+   * @param options Optional parameters for code generation
+   * @returns Generation result
+   */
+  public async generateCode(
+    codeSnippets: string[],
+    options?: ExtractOptions
+  ): Promise<any> {
+    try {
+      // Validate input
+      if (!codeSnippets || codeSnippets.length === 0 || codeSnippets.every(s => !s.trim())) {
+        throw new InvalidInputError('Code snippets cannot be empty');
+      }
+      
+      await this.checkBinary();
+      
+      // Create a temporary file for the code snippets
+      const tmpPath = path.join(os.tmpdir(), `paper2code-${Date.now()}.txt`);
+      
+      // Write code snippets to the file
+      const content = codeSnippets.join('\n\n---\n\n');
+      fs.writeFileSync(tmpPath, content);
+      
+      try {
+        // Similar to the Python client, use extract instead of generate
+        const args = ['extract', '--input', tmpPath];
+        
+        if (options?.outputDir) {
+          args.push('--output', options.outputDir);
+        }
+        
+        if (options?.language) {
+          args.push('--language', options.language);
+        }
+        
+        if (options?.strategy) {
+          args.push('--strategy', options.strategy);
+        }
+        
+        if (options?.force) {
+          args.push('--force');
+        }
+        
+        return await this.runCommand<any>(args);
+      } finally {
+        // Clean up the temporary file
+        try {
+          fs.unlinkSync(tmpPath);
+        } catch (e) {
+          console.warn(`Failed to delete temporary file ${tmpPath}:`, e);
+        }
+      }
+    } catch (error) {
+      if (error instanceof Paper2CodeError) {
+        throw error;
+      } else {
+        throw new CommandExecutionError(`Failed to generate code: ${(error as Error).message}`);
       }
     }
   }
@@ -267,8 +522,68 @@ export class Paper2CodeClient {
    * @returns Current configuration
    */
   public async getConfig(): Promise<AppConfig> {
-    const args = ['config', 'show'];
-    return this.runCommand<AppConfig>(args);
+    try {
+      await this.checkBinary();
+      
+      // Try to read the config file directly
+      if (fs.existsSync(this.configPath)) {
+        try {
+          const configContent = fs.readFileSync(this.configPath, 'utf-8');
+          try {
+            // Try to parse as JSON
+            return JSON.parse(configContent) as AppConfig;
+          } catch (e) {
+            // Return raw content if parsing fails
+            return {
+              raw_config: configContent,
+              success: true
+            };
+          }
+        } catch (e) {
+          // If reading fails, try to generate a new config
+          return await this.generateConfig();
+        }
+      } else {
+        // Config doesn't exist, generate a new one
+        return await this.generateConfig();
+      }
+    } catch (error) {
+      if (error instanceof Paper2CodeError) {
+        throw error;
+      } else {
+        throw new CommandExecutionError(`Failed to get configuration: ${(error as Error).message}`);
+      }
+    }
+  }
+  
+  /**
+   * Generate a new configuration file
+   * 
+   * @param options Options for generating the configuration file
+   * @returns Generated configuration
+   */
+  public async generateConfig(options?: ConfigOptions): Promise<AppConfig> {
+    try {
+      await this.checkBinary();
+      
+      const args = ['config', '--generate'];
+      
+      if (options?.outputPath) {
+        args.push('--output', options.outputPath);
+      }
+      
+      if (options?.force) {
+        args.push('--force');
+      }
+      
+      return await this.runCommand<AppConfig>(args);
+    } catch (error) {
+      if (error instanceof Paper2CodeError) {
+        throw error;
+      } else {
+        throw new CommandExecutionError(`Failed to generate configuration: ${(error as Error).message}`);
+      }
+    }
   }
 
   /**
@@ -279,10 +594,42 @@ export class Paper2CodeClient {
    * @returns Updated configuration
    */
   public async setApiKey(provider: string, apiKey: string): Promise<AppConfig> {
-    const args = ['config', 'set', `${provider}.api_key`, apiKey];
-    return this.runCommand<AppConfig>(args);
+    try {
+      // Validate input
+      if (provider !== 'claude' && provider !== 'openai') {
+        throw new InvalidInputError(`Invalid provider: ${provider}. Must be 'claude' or 'openai'.`);
+      }
+      
+      if (!apiKey || !apiKey.trim()) {
+        throw new InvalidInputError('API key cannot be empty');
+      }
+      
+      await this.checkBinary();
+      
+      // The CLI doesn't have a 'set' subcommand for config, so we'll need to modify the config file directly
+      const config = await this.getConfig();
+      
+      // Add provider section if it doesn't exist
+      if (!config[provider as keyof AppConfig]) {
+        (config as any)[provider] = {};
+      }
+      
+      // Set API key
+      (config as any)[provider]['api_key'] = apiKey;
+      
+      // Write updated config back to file
+      fs.writeFileSync(this.configPath, JSON.stringify(config, null, 2));
+      
+      return config;
+    } catch (error) {
+      if (error instanceof Paper2CodeError) {
+        throw error;
+      } else {
+        throw new CommandExecutionError(`Failed to set API key: ${(error as Error).message}`);
+      }
+    }
   }
 }
 
 // Export default client
-export default Paper2CodeClient; 
+export default Paper2CodeClient;
