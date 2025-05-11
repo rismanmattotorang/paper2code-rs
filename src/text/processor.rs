@@ -32,9 +32,34 @@ impl TextProcessor {
     }
     
     /// Process multiple text chunks in parallel
-    pub async fn process_chunks(&self, chunks: &[String]) -> Result<Vec<CodeBlock>, AppError> {
-        let blocks = self.code_detector.detect_code_blocks_parallel(chunks).await;
-        Ok(blocks)
+    pub fn process_chunks(&self, chunks: &[String]) -> Result<Vec<CodeBlock>, AppError> {
+        use rayon::prelude::*;
+        use std::sync::Mutex;
+        
+        // Use rayon for parallel processing on multiple threads
+        let results = Mutex::new(Vec::new());
+        
+        chunks.par_iter().for_each(|chunk| {
+            let blocks = self.code_detector.detect_code_blocks(chunk);
+            
+            // Add chunk index metadata to help with merging later if needed
+            let blocks_with_metadata: Vec<CodeBlock> = blocks.into_iter()
+                .enumerate()
+                .map(|(i, block)| {
+                    block.with_metadata("local_index", &i.to_string())
+                })
+                .collect();
+            
+            if !blocks_with_metadata.is_empty() {
+                let mut results_guard = results.lock().unwrap();
+                results_guard.extend(blocks_with_metadata);
+            }
+        });
+        
+        let collected_blocks = results.into_inner()
+            .map_err(|e| AppError::TaskJoinError(e.to_string()))?;
+        
+        Ok(collected_blocks)
     }
     
     /// Split a long text into chunks for more efficient processing

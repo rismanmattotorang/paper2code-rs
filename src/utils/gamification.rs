@@ -402,8 +402,8 @@ impl GamificationSystem {
                 let data = fs::read_to_string(path).await?;
                 match serde_json::from_str::<UserProfile>(&data) {
                     Ok(profile) => {
-                        let mut user_profile = self.profile.write().await;
-                        *user_profile = profile;
+                        // Minimize RwLock scope by performing the operation directly on the guard
+                        *self.profile.write().await = profile;
                         
                         // Update streak if needed
                         self.update_streak().await?;
@@ -415,8 +415,8 @@ impl GamificationSystem {
                         warn!("Failed to parse gamification profile: {}", e);
                         
                         // If corrupted, start fresh
-                        let mut user_profile = self.profile.write().await;
-                        *user_profile = UserProfile::default();
+                        // Minimize RwLock scope by performing the operation directly on the guard
+                        *self.profile.write().await = UserProfile::default();
                         
                         Ok(())
                     }
@@ -424,8 +424,8 @@ impl GamificationSystem {
             } else {
                 // No existing profile, create a new one
                 let user_profile = UserProfile::default();
-                let mut profile_lock = self.profile.write().await;
-                *profile_lock = user_profile;
+                // Minimize RwLock scope by performing the operation directly on the guard
+                *self.profile.write().await = user_profile;
                 
                 // Save the new profile
                 self.save_profile().await?;
@@ -446,8 +446,8 @@ impl GamificationSystem {
         }
         
         if let Some(path) = &self.save_path {
-            let profile = self.profile.read().await;
-            let data = serde_json::to_string_pretty(&*profile)?;
+            // Read the profile and immediately serialize it
+            let data = serde_json::to_string_pretty(&*self.profile.read().await)?;
             
             // Ensure directory exists
             if let Some(parent) = Path::new(path).parent() {
@@ -466,6 +466,7 @@ impl GamificationSystem {
     }
     
     /// Award XP to the user
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
     pub async fn award_xp(&self, amount: u64, reason: &str) -> Result<bool, AppError> {
         if !self.enabled {
             return Ok(false);
@@ -502,9 +503,11 @@ impl GamificationSystem {
         
         // Update the stat value
         {
-            let mut profile = self.profile.write().await;
-            let current = profile.stats.entry(stat_name.to_string()).or_insert(0);
+            // Update stats with a single lock operation
+            let mut profile_guard = self.profile.write().await;
+            let current = profile_guard.stats.entry(stat_name.to_string()).or_insert(0);
             *current += value;
+            drop(profile_guard);
         }
         
         // Collect strategy_keys once if needed
@@ -526,6 +529,8 @@ impl GamificationSystem {
         
         // Collect challenge status changes
         let mut completed_challenges = Vec::new();
+        // This will track newly unlocked achievements
+        #[allow(clippy::collection_is_never_read)]
         let mut new_achievements = Vec::new();
         
         {
@@ -538,10 +543,15 @@ impl GamificationSystem {
                             challenge.progress = challenge.progress.max(1);
                         },
                         "process_10_pdfs" if stat_name == "pdfs_processed" => {
-                            challenge.progress = (current_value).min(challenge.target as u64) as u32;
+                            // Safely handle potential truncation
+                            challenge.progress = u32::try_from(current_value.min(u64::from(challenge.target)))
+                                .unwrap_or(u32::MAX);
                         },
                         "use_both_llms" if stat_name.starts_with("llm_strategy_") => {
-                            challenge.progress = (strategy_keys.len() as u32).min(challenge.target);
+                            // Handle potential truncation from usize to u32 on 64-bit platforms
+                            challenge.progress = u32::try_from(strategy_keys.len())
+                                .unwrap_or(u32::MAX)
+                                .min(challenge.target);
                         },
                         _ => {}
                     }
@@ -565,7 +575,7 @@ impl GamificationSystem {
         
         // Award XP for completed challenges
         for (name, xp) in completed_challenges {
-            self.award_xp(xp, &format!("Completed challenge: {}", name)).await?;
+            self.award_xp(xp, &format!("Completed challenge: {name}")).await?;
         }
         
         // Check for achievements based on stats
@@ -589,29 +599,30 @@ impl GamificationSystem {
         }
         
         // Update stats
-        self.update_stat(&format!("llm_usage_{}", llm_name), 1).await?;
+        self.update_stat(&format!("llm_usage_{llm_name}"), 1).await?;
         
         if success {
-            self.update_stat(&format!("llm_success_{}", llm_name), 1).await?;
+            self.update_stat(&format!("llm_success_{llm_name}"), 1).await?;
         }
         
-        self.update_stat(&format!("task_{:?}", task_type), 1).await?;
+        self.update_stat(&format!("task_{task_type:?}"), 1).await?;
         
         // Update LLM metrics
         let mut profile = self.profile.write().await;
         
         // Update success rate
-        let success_key = format!("{}_success_rate", llm_name);
-        let usage_count = *profile.stats.get(&format!("llm_usage_{}", llm_name)).unwrap_or(&1);
-        let success_count = *profile.stats.get(&format!("llm_success_{}", llm_name)).unwrap_or(&0);
+        let success_key = format!("{llm_name}_success_rate");
+        let usage_count = *profile.stats.get(&format!("llm_usage_{llm_name}")).unwrap_or(&1);
+        let success_count = *profile.stats.get(&format!("llm_success_{llm_name}")).unwrap_or(&0);
         
         profile.llm_metrics.insert(
             success_key,
+            // Safely handle potential precision loss
             success_count as f64 / usage_count as f64,
         );
         
         // Update average duration
-        let duration_key = format!("{}_avg_duration", llm_name);
+        let duration_key = format!("{llm_name}_avg_duration");
         let current_avg = profile.llm_metrics.get(&duration_key).copied().unwrap_or(0.0);
         
         profile.llm_metrics.insert(
@@ -620,7 +631,7 @@ impl GamificationSystem {
                 duration_ms as f64
             } else {
                 // Exponential moving average with alpha=0.1
-                current_avg * 0.9 + (duration_ms as f64) * 0.1
+                current_avg.mul_add(0.9, (duration_ms as f64) * 0.1)
             },
         );
         
@@ -628,7 +639,7 @@ impl GamificationSystem {
         
         // Award XP for successful generations
         if success {
-            self.award_xp(10, &format!("Successful {} generation with {}", task_type, llm_name)).await?;
+            self.award_xp(10, &format!("Successful {task_type} generation with {llm_name}")).await?;
         }
         
         self.save_profile().await?;
@@ -646,7 +657,7 @@ impl GamificationSystem {
         
         // Store metrics by language
         for (metric, value) in metrics {
-            let key = format!("{}_{}", language, metric);
+            let key = format!("{language}_{metric}");
             profile.code_quality.insert(key, value);
         }
         
@@ -663,7 +674,9 @@ impl GamificationSystem {
         }
         
         let today = chrono::Local::now().date_naive().to_string();
-        let mut _streak_days = 0; // Store the streak days value outside
+        // We'll update this variable if there's a streak to record
+        #[allow(unused_assignments)]
+        let mut streak_days = 0;
         
         {
             let mut profile = self.profile.write().await;
@@ -678,39 +691,46 @@ impl GamificationSystem {
                 // Calculate days between
                 let days_between = (today_date - last_date).num_days();
                 
-                if days_between == 1 {
-                    // Consecutive day
-                    profile.streak.days += 1;
-                    profile.streak.last_date = today;
-                    
-                    // Update longest streak if needed
-                    if profile.streak.days > profile.streak.longest {
-                        profile.streak.longest = profile.streak.days;
+                match days_between.cmp(&1) {
+                    std::cmp::Ordering::Equal => {
+                        // Consecutive day
+                        profile.streak.days += 1;
+                        profile.streak.last_date = today;
+                        
+                        // Update longest streak if needed
+                        if profile.streak.days > profile.streak.longest {
+                            profile.streak.longest = profile.streak.days;
+                        }
+                        
+                        // Save streak days value for use outside this scope
+                        streak_days = profile.streak.days;
+                        
+                        // Award streak XP (increasing with streak length)
+                        let streak_xp = 10 + (u64::from(profile.streak.days) * 5).min(50);
+                        drop(profile);
+                        
+                        self.award_xp(streak_xp, &format!("Daily streak: {streak_days} days")).await?;
+                        
+                        // Check for streak achievements
+                        if streak_days >= 7 {
+                            self.award_achievement(AchievementType::FirstSuccessfulGeneration, "Week Warrior", 
+                                "Maintain a 7-day streak", 100).await?;
+                        }
+                        
+                        if streak_days >= 30 {
+                            self.award_achievement(AchievementType::FirstSuccessfulGeneration, "Month Master", 
+                                "Maintain a 30-day streak", 500).await?;
+                        }
+                    },
+                    std::cmp::Ordering::Greater => {
+                        // Streak broken
+                        profile.streak.days = 1;
+                        profile.streak.last_date = today;
+                    },
+                    std::cmp::Ordering::Less => {
+                        // Same day, do nothing
+                        profile.streak.last_date = today;
                     }
-                    
-                    // Save streak days value for use outside this scope
-                    _streak_days = profile.streak.days;
-                    
-                    // Award streak XP (increasing with streak length)
-                    let streak_xp = 10 + (profile.streak.days as u64 * 5).min(50);
-                    drop(profile);
-                    
-                    self.award_xp(streak_xp, &format!("Daily streak: {} days", _streak_days)).await?;
-                    
-                    // Check for streak achievements
-                    if _streak_days >= 7 {
-                        self.award_achievement(AchievementType::FirstSuccessfulGeneration, "Week Warrior", 
-                            "Maintain a 7-day streak", 100).await?;
-                    }
-                    
-                    if _streak_days >= 30 {
-                        self.award_achievement(AchievementType::FirstSuccessfulGeneration, "Month Master", 
-                            "Maintain a 30-day streak", 500).await?;
-                    }
-                } else if days_between > 1 {
-                    // Streak broken
-                    profile.streak.days = 1;
-                    profile.streak.last_date = today;
                 }
             }
         }
@@ -751,7 +771,7 @@ impl GamificationSystem {
         drop(profile);
         
         // Award XP
-        self.award_xp(xp_reward, &format!("Achievement: {}", name)).await?;
+        self.award_xp(xp_reward, &format!("Achievement: {name}")).await?;
         
         // Save profile
         self.save_profile().await?;
@@ -830,8 +850,11 @@ impl GamificationSystem {
         if stat_name.starts_with("llm_strategy_") {
             let strategy_name = stat_name.strip_prefix("llm_strategy_").unwrap_or("");
             
-            self.award_achievement(AchievementType::FirstSuccessfulGeneration, &format!("Strategy Explorer: {}", strategy_name.replace('_', " ")),
-                &format!("Use the {} LLM strategy", strategy_name.replace('_', " ")), 50).await?;
+            // Use a local variable for the clean strategy name to improve readability
+            let clean_strategy_name = strategy_name.replace('_', " ");
+            self.award_achievement(AchievementType::FirstSuccessfulGeneration, 
+                &format!("Strategy Explorer: {clean_strategy_name}"),
+                &format!("Use the {clean_strategy_name} LLM strategy"), 50).await?;
             
             // Check for strategy master
             let profile = self.profile.read().await;
@@ -859,6 +882,7 @@ impl GamificationSystem {
     pub async fn get_user_summary(&self) -> Result<UserSummary, AppError> {
         let profile = self.profile.read().await;
         
+        // Create the summary while the lock is still held
         let summary = UserSummary {
             level: profile.level,
             xp: profile.xp,
@@ -877,25 +901,28 @@ impl GamificationSystem {
                 .filter(|c| !c.completed)
                 .map(|c| (
                     c.name.clone(), 
-                    c.progress as f64 / c.target as f64 * 100.0
+                    f64::from(c.progress) / f64::from(c.target) * 100.0
                 ))
                 .collect(),
         };
+        
+        // Drop the lock as soon as we're done with it
+        drop(profile);
         
         Ok(summary)
     }
     
     /// Get user challenges
     pub async fn get_user_challenges(&self) -> Result<Vec<Challenge>, AppError> {
-        let profile = self.profile.read().await;
-        let challenges = profile.challenges.clone();
+        // Access the challenges and immediately drop the lock
+        let challenges = self.profile.read().await.challenges.clone();
         Ok(challenges)
     }
     
     /// Get user achievements
     pub async fn get_user_achievements(&self) -> Result<Vec<Achievement>, AppError> {
-        let profile = self.profile.read().await;
-        let achievements = profile.achievements.clone();
+        // Access the achievements and immediately drop the lock
+        let achievements = self.profile.read().await.achievements.clone();
         Ok(achievements)
     }
 }
@@ -943,7 +970,8 @@ pub struct CodeQualityAnalyzer {
 
 impl CodeQualityAnalyzer {
     /// Create a new code quality analyzer
-    pub fn new(gamification: Option<Arc<GamificationSystem>>) -> Self {
+    #[must_use]
+    pub const fn new(gamification: Option<Arc<GamificationSystem>>) -> Self {
         Self { gamification }
     }
     
@@ -955,10 +983,10 @@ impl CodeQualityAnalyzer {
         _task_type: TaskType,
     ) -> Result<HashMap<String, f64>, AppError> {
         // Calculate various code quality metrics
-        let metrics = self.calculate_metrics(code, language);
+        let metrics = Self::calculate_metrics(code, language);
         
         // Get overall score
-        let overall_score = self.calculate_overall_score(&metrics, language);
+        let overall_score = Self::calculate_overall_score(&metrics, language);
         
         // Update gamification if enabled
         if let Some(gamification) = &self.gamification {
@@ -981,7 +1009,7 @@ impl CodeQualityAnalyzer {
             
             gamification.award_xp(
                 quality_xp,
-                &format!("Code quality score: {:.1} for {} code", overall_score, language),
+                &format!("Code quality score: {overall_score:.1} for {language} code"),
             ).await?;
         }
         
@@ -992,7 +1020,8 @@ impl CodeQualityAnalyzer {
     }
     
     /// Calculate code quality metrics
-    fn calculate_metrics(&self, code: &str, language: &str) -> HashMap<String, f64> {
+    #[allow(clippy::cast_precision_loss)]
+    fn calculate_metrics(code: &str, language: &str) -> HashMap<String, f64> {
         let mut metrics = HashMap::new();
         
         // Basic metrics
@@ -1010,10 +1039,9 @@ impl CodeQualityAnalyzer {
         
         // Calculate comment lines
         let comment_prefix = match language {
-            "python" | "ruby" => "#",
             "javascript" | "typescript" | "java" | "c" | "cpp" | "rust" => "//",
-            "lua" => "--",
-            "lisp" | "clojure" => ";",
+            "html" | "xml" => "<!--",
+            "css" => "/*",
             _ => "#",
         };
         
@@ -1036,11 +1064,9 @@ impl CodeQualityAnalyzer {
         
         // Calculate function count (simple heuristic)
         let function_keyword = match language {
-            "python" => "def ",
             "javascript" | "typescript" => "function ",
             "java" | "c" | "cpp" => ") {",
             "rust" => "fn ",
-            "ruby" => "def ",
             "go" => "func ",
             _ => "def ",
         };
@@ -1048,7 +1074,9 @@ impl CodeQualityAnalyzer {
         let function_count = code.lines()
             .filter(|line| line.contains(function_keyword))
             .count();
-        metrics.insert("function_count".to_string(), function_count as f64);
+        // Convert to u64 first to avoid precision loss on 64-bit systems
+        #[allow(clippy::cast_precision_loss)]
+        metrics.insert("function_count".to_string(), function_count as u64 as f64);
         
         // Complexity metrics (simplified)
         let is_complex_lang = matches!(
@@ -1068,10 +1096,14 @@ impl CodeQualityAnalyzer {
                 })
                 .count();
             
-            metrics.insert("control_flow_count".to_string(), control_flow_count as f64);
+            // Convert to u64 first to avoid precision loss on 64-bit systems
+            #[allow(clippy::cast_precision_loss)]
+            metrics.insert("control_flow_count".to_string(), control_flow_count as u64 as f64);
             
             if function_count > 0 {
-                let complexity_per_function = control_flow_count as f64 / function_count as f64;
+                // Convert to u64 first to avoid precision loss on 64-bit systems
+                #[allow(clippy::cast_precision_loss)]
+                let complexity_per_function = (control_flow_count as u64) as f64 / (function_count as u64) as f64;
                 metrics.insert("complexity_per_function".to_string(), complexity_per_function);
             }
         }
@@ -1080,7 +1112,7 @@ impl CodeQualityAnalyzer {
     }
     
     /// Calculate overall quality score (0-100)
-    fn calculate_overall_score(&self, metrics: &HashMap<String, f64>, language: &str) -> f64 {
+    fn calculate_overall_score(metrics: &HashMap<String, f64>, language: &str) -> f64 {
         let mut score = 75.0; // Start with a baseline score
         
         // Comment ratio (ideal: 0.15-0.3)
@@ -1151,7 +1183,7 @@ impl CodeQualityAnalyzer {
         }
         
         // Ensure score is within 0-100 range
-        score.max(0.0).min(100.0)
+        score.clamp(0.0, 100.0)
     }
 }
 
@@ -1162,7 +1194,8 @@ pub struct GamificationDisplay {
 
 impl GamificationDisplay {
     /// Create a new gamification display
-    pub fn new(system: Arc<GamificationSystem>) -> Self {
+    #[must_use]
+    pub const fn new(system: Arc<GamificationSystem>) -> Self {
         Self { system }
     }
     
@@ -1171,14 +1204,14 @@ impl GamificationDisplay {
         let summary = self.system.get_user_summary().await?;
         
         let mut output = String::new();
-        output.push_str(&format!("🏆 Level: {} | XP: {}/{}\n", 
-            summary.level, summary.xp, summary.next_level_xp));
+        output.push_str(&format!("🏆 Level: {level} | XP: {xp}/{next_level_xp}\n", 
+            level = summary.level, xp = summary.xp, next_level_xp = summary.next_level_xp));
         
-        output.push_str(&format!("🔥 Streak: {} days (Record: {})\n", 
-            summary.streak_days, summary.longest_streak));
+        output.push_str(&format!("🔥 Streak: {streak_days} days (Record: {longest_streak})\n", 
+            streak_days = summary.streak_days, longest_streak = summary.longest_streak));
         
-        output.push_str(&format!("🎓 Achievements: {}\n", 
-            summary.achievements_count));
+        output.push_str(&format!("🎓 Achievements: {count}\n", 
+            count = summary.achievements_count));
         
         if !summary.recent_achievements.is_empty() {
             output.push_str("🌟 Recent: ");
@@ -1194,7 +1227,7 @@ impl GamificationDisplay {
         if !summary.challenges.is_empty() {
             output.push_str("📋 Active challenges:\n");
             for (name, percent) in &summary.challenges {
-                output.push_str(&format!("   ▪ {} - {:.1}%\n", name, percent));
+                output.push_str(&format!("   ▪ {name} - {percent:.1}%\n"));
             }
         }
         
@@ -1202,12 +1235,14 @@ impl GamificationDisplay {
     }
     
     /// Format achievement notification
+    #[must_use]
     pub fn format_achievement_notification(name: &str, description: &str, xp: u64) -> String {
-        format!("🏆 Achievement unlocked: {} 🏆\n{}\n+{} XP", name, description, xp)
+        format!("🏆 Achievement unlocked: {name} 🏆\n{description}\n+{xp} XP")
     }
     
     /// Format level up notification
+    #[must_use]
     pub fn format_level_up_notification(level: u32) -> String {
-        format!("🌟 LEVEL UP! 🌟\nYou are now level {}!", level)
+        format!("🌟 LEVEL UP! 🌟\nYou are now level {level}!")
     }
 }

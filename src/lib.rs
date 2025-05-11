@@ -28,7 +28,8 @@ pub use llm::{
     client::{LlmClient, ClaudeClient, OpenAiClient, MultiLlmClient},
     strategy::{LlmStrategy, TaskType},
     prompt::PromptBuilder,
+    DomainPromptLibrary,
 };
 pub use pdf::PdfExtractor;
-pub use text::{TextProcessor, code_detector::{CodeBlock, CodeDetector}};
-pub use code::{CodeGenerator, CodeWriter};
+pub use text::{TextProcessor, code_detector::{CodeBlock, CodeDetector}, domain_detector::{DomainDetector, ComputationalDomain}};
+pub use code::{CodeGenerator, CodeWriter, DomainAwareCodeGenerator};

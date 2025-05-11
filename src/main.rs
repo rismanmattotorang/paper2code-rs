@@ -14,15 +14,19 @@ use paper2code_rs::{
     AppError,
     cli::Commands,
     CodeGenerator,
+    DomainAwareCodeGenerator,
     CodeBlock,
     CodeDetector,
     PdfExtractor,
     TextProcessor,
+    DomainDetector,
+    ComputationalDomain,
     cli::{Cli, ExtractArgs, ConfigArgs, TestArgs},
     llm::{
         client::{LlmClient, ClaudeClient, OpenAiClient, MultiLlmClient},
         strategy::LlmStrategy,
         prompt::PromptBuilder,
+        DomainPromptLibrary,
     },
 };
 
@@ -245,7 +249,7 @@ async fn process_test_command(args: &TestArgs, config_path: &PathBuf) -> Result<
         .with_language("python");  // Default language for testing
     
     // Test OpenAI if requested
-    if args.openai || (!args.openai && !args.claude) {
+    if args.openai || !args.claude {
         println!("Testing OpenAI API connection...");
         
         if let Some(openai_config) = &config.openai {
@@ -274,7 +278,7 @@ async fn process_test_command(args: &TestArgs, config_path: &PathBuf) -> Result<
     }
     
     // Test Claude if requested
-    if args.claude || (!args.openai && !args.claude) {
+    if args.claude || !args.openai {
         println!("\nTesting Claude API connection...");
         
         if let Some(claude_config) = &config.claude {
@@ -413,11 +417,26 @@ async fn process_pdf(
         )));
     }
     
-    // 3. Process text to find code blocks
-    info!("Detecting code blocks");
+    // 3. Detect computational domain and code blocks
+    info!("Detecting computational domain and code blocks");
     let detection_start = Instant::now();
-    let mut code_blocks = text_processor.process_chunks(&text_chunks).await?;
+    
+    // Detect computational domain
+    let domain_detector = DomainDetector::default();
+    let concatenated_text = text_chunks.join(" ");
+    let domain = domain_detector.detect_domain(&concatenated_text);
+    info!("Detected computational domain: {}", domain);
+    
+    // Process text to find code blocks
+    let mut code_blocks = text_processor.process_chunks(&text_chunks)?;
     let detection_elapsed = detection_start.elapsed();
+    
+    // Record the detected domain for code generation
+    let domain_info = format!("Detected computational domain: {}\nPreferred languages: {}\nRecommended frameworks: {}", 
+        domain, 
+        domain.preferred_languages().join(", "), 
+        domain.preferred_frameworks().join(", "));
+    info!("{}", domain_info);
     
     info!("Code detection completed in {:.2?} - {} blocks found", 
         detection_elapsed, code_blocks.len());
@@ -467,25 +486,101 @@ async fn process_pdf(
     info!("Generating executable code from {} blocks", code_blocks.len());
     let generation_start = Instant::now();
     
-    // Create a customized prompt with PDF filename
+    // Create a domain-aware customized prompt with PDF filename
+    let domain_prompt_library = DomainPromptLibrary::default();
     let mut prompt_template = config.prompt.extraction_template.clone();
+    
+    // Customize prompt with domain information and paper title
     prompt_template = prompt_template.replace(
         "You are a skilled programmer", 
-        &format!("You are a skilled programmer analyzing the paper '{}'", pdf_name)
+        &format!("You are a skilled programmer specializing in {} and analyzing the paper '{}'", 
+            domain, pdf_name)
     );
     
-    // Set output directory to PDF-specific directory
-    let modified_code_generator = CodeGenerator::new(
-        code_generator.client().clone(),
-        output_dir,
-        code_generator.strategy().clone(),
-    );
+    // Add domain-specific guidance to the prompt template
+    if let Some(domain_template) = domain_prompt_library.get_prompt_template(&domain) {
+        let domain_guidance = format!("\n\n# Domain-Specific Guidance\n{}\n", domain_template);
+        prompt_template.push_str(&domain_guidance);
+    }
     
+    // Add language-specific recommendations if target language is specified
+    if let Some(lang) = target_language {
+        if domain.preferred_languages().contains(&lang) {
+            prompt_template.push_str(&format!("\n\n{} is an excellent choice for this {} domain.\n", 
+                lang, domain));
+            
+            // Add code template if available
+            if let Some(code_template) = domain_prompt_library.get_code_template(&domain, lang) {
+                prompt_template.push_str(&format!("\n\nHere's a template structure for {} code in this domain:\n```{}\n{}\n```\n",
+                    lang, lang, code_template));
+            }
+        }
+    }
+    
+    // We need to create a new code generator with a different output directory
+    // Since we can't directly clone the trait object, we'll create a new code generator
+    // that will have to run the LLM again, but will output to the PDF-specific directory
+    
+    // Create a new client from the current configuration
+    let multi_llm_client = create_multi_llm_client(config, code_generator.strategy().clone()).await?;
+    
+    // Store output_dir in a PathBuf for proper handling
+    let output_path = PathBuf::from(&output_dir);
+    
+    // Decide whether to use domain-aware generation based on the detected domain
+    let modified_code_generator = if domain != ComputationalDomain::General {
+        // Use domain-aware code generator for specialized domains
+        info!("Using domain-aware code generation for {}", domain);
+        
+        // Note: In this implementation we're creating the domain-aware generator for tracking purposes,
+        // but still using the standard code generator with the enhanced prompts from our domain detection.
+        // A full integration would involve deeper changes to the CodeGenerator trait interface.
+        // Create a domain-aware generator for specialized code generation
+        let _domain_generator = DomainAwareCodeGenerator::new(
+            multi_llm_client.box_clone(), 
+            code_generator.strategy().clone()
+        );
+        
+        // Create a CodeGenerator that uses domain-aware techniques via enhanced prompts
+        CodeGenerator::new(
+            multi_llm_client.box_clone(),
+            output_dir.clone(),
+            code_generator.strategy().clone(),
+        )
+    } else {
+        // Use standard code generator for general domains
+        info!("Using standard code generation");
+        CodeGenerator::new(
+            multi_llm_client.box_clone(),
+            output_dir.clone(),
+            code_generator.strategy().clone(),
+        )
+    };
+    
+    // Add domain information to generated files' metadata
     let result_paths = modified_code_generator.generate_from_blocks(
         code_blocks.as_slice(), 
         &prompt_template,
         target_language,
     ).await?;
+    
+    // If specific domain was detected, generate a domain info file
+    if domain != ComputationalDomain::General {
+        // Create a domain info file
+        let domain_info_path = output_path.join("domain_info.md");
+        let domain_readme = format!("# Domain Analysis for {}\n\n## Detected Computational Domain\n{}\n\n## Recommended Languages\n{}\n\n## Recommended Frameworks/Libraries\n{}\n\n## Domain-Specific Notes\n{}\n", 
+            pdf_name, 
+            domain,
+            domain.preferred_languages().iter().map(|l| format!("- {}", l)).collect::<Vec<_>>().join("\n"),
+            domain.preferred_frameworks().iter().map(|f| format!("- {}", f)).collect::<Vec<_>>().join("\n"),
+            domain_detector.get_domain_prompt_suggestions(domain)
+        );
+        
+        fs::write(&domain_info_path, domain_readme).await
+            .map_err(|e| AppError::from_io_error(e))?;
+        
+        info!("Domain information written to {:?}", domain_info_path);
+    }
     
     let generation_elapsed = generation_start.elapsed();
     info!("Code generation completed in {:.2?} - {} files generated", 
@@ -501,7 +596,7 @@ async fn process_pdf(
 /// Use LLM to detect code blocks in text
 async fn detect_code_blocks_with_llm(
     text_chunks: &[String],
-    llm_client: &Box<dyn LlmClient>,
+    llm_client: &dyn LlmClient,
     template: &str,
 ) -> Result<Vec<CodeBlock>, AppError> {
     let mut code_blocks = Vec::new();

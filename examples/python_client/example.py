@@ -39,8 +39,9 @@ The algorithm implements gradient descent for optimization.
 """
 
 def main():
-    # Initialize the client
-    client = Paper2CodeClient()
+    # Initialize the client with the full path to the binary
+    binary_path = "/Users/rismanadnan/Kalbe/paper2code-rs/target/release/paper2code-rs"
+    client = Paper2CodeClient(binary_path)
     print("Paper2Code Client initialized successfully.")
     
     # Extract code from text

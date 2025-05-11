@@ -221,7 +221,7 @@ pub async fn process_text_with_recovery(
     const INITIAL_DELAY: Duration = Duration::from_secs(1);
     
     retry_with_backoff(
-        || async { processor.process_chunks(&[text.to_string()]).await },
+        || async { processor.process_chunks(&[text.to_string()]) },
         MAX_RETRIES,
         INITIAL_DELAY,
     ).await

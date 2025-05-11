@@ -28,8 +28,8 @@ impl CodeGenerator {
     }
     
     /// Get a reference to the LLM client
-    pub fn client(&self) -> &Box<dyn LlmClient> {
-        &self.client
+    pub fn client(&self) -> &dyn LlmClient {
+        self.client.as_ref()
     }
     
     /// Get a reference to the strategy

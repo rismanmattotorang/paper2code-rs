@@ -1,6 +1,6 @@
 # Paper2Code-rs - User Guide
 
-A Rust command-line tool to extract code snippets from research papers and convert them into fully executable code using advanced LLMs (Large Language Models).
+A high-performance Rust command-line tool to extract code snippets from research papers and convert them into fully executable code using advanced LLMs (Large Language Models). This tool allows researchers and developers to quickly implement algorithms and techniques described in academic papers.
 
 ## Table of Contents
 
@@ -15,13 +15,34 @@ A Rust command-line tool to extract code snippets from research papers and conve
 
 ## Features
 
-- Extract code from PDF research papers using optical character recognition (OCR)
-- Leverage multiple LLMs (OpenAI GPT and Claude) for higher quality code extraction
-- Convert code snippets to executable programs with proper syntax
-- Intelligent language detection when not explicitly specified
-- Customizable prompt templates for different extraction tasks
-- Configure different strategies for each extraction phase
-- High performance through parallel processing and asynchronous operations
+- **Advanced PDF Processing**: Extract text and code from research papers with robust handling of various PDF formats
+- **Multi-LLM Integration**: Leverage the combined capabilities of OpenAI GPT and Anthropic Claude models for more accurate code extraction and generation
+- **Intelligent Code Detection**: Automatically identify code blocks in paper text with sophisticated pattern recognition
+- **Computational Domain Detection**: Automatically identify the research paper's computational domain to optimize code generation
+- **Domain-Specific Code Generation**: Generate optimized, production-quality code for specialized domains:
+  - Numerical Computing
+  - Chip Design and Optimization
+  - Bioinformatics and Functional Genomics
+  - Quantum Computing Algorithms
+  - Digital Twin Simulations
+  - Classical Machine Learning Models
+  - Deep Learning Models
+  - Transformer-based Generative Models
+  - Computational Physics, Biology, and Finance
+  - Supply Chain and Logistics Algorithms
+- **Multiple LLM Strategies**:
+  - Use single models (OpenAI only, Claude only)
+  - Sequential fallback approaches (try one model first, fall back to another)
+  - Compare and merge results from multiple models for higher quality
+  - Adaptive strategy selection based on domain expertise and task complexity
+- **Code Enhancement**: Convert pseudocode and code snippets into fully executable programs with proper syntax, imports, and error handling
+- **Automatic Language Detection**: Intelligently determine the programming language when not explicitly specified
+- **High Performance**:
+  - Parallel processing of text chunks
+  - Asynchronous LLM API calls
+  - Efficient memory usage for large documents
+- **Configurable Workflow**: Customize every aspect of the extraction and generation process
+- **Robust Error Handling**: Graceful degradation when components fail with detailed logging
 
 ## Installation
 
@@ -29,26 +50,55 @@ A Rust command-line tool to extract code snippets from research papers and conve
 
 - Rust toolchain (1.70.0 or newer)
 - API keys for at least one of:
-  - OpenAI API
-  - Anthropic Claude API
+  - OpenAI API (required for OpenAI models)
+  - Anthropic Claude API (required for Claude models)
+- PDF research papers to process
+
+### System Requirements
+
+- **OS**: macOS, Linux, or Windows
+- **Memory**: Minimum 4GB RAM recommended
+- **Storage**: At least 100MB for installation plus space for generated code
+- **Processor**: Multi-core CPU recommended for parallel processing
+- **Internet**: Required for LLM API calls
 
 ### From Source
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/paper2code-rs.git
+   git clone https://github.com/rismanmattotorang/paper2code-rs.git
    cd paper2code-rs
    ```
 
-2. Build the project:
+2. Build the project in release mode for optimal performance:
    ```bash
    cargo build --release
    ```
 
-3. Install the binary:
+3. Install the binary (optional):
    ```bash
    cargo install --path .
    ```
+
+4. Or run directly from the project directory:
+   ```bash
+   cargo run --release -- [COMMAND] [OPTIONS]
+   ```
+
+### Environment Variables (Alternative to config file)
+
+You can also use environment variables instead of a config file:
+
+```bash
+# Required for OpenAI functionality
+export OPENAI_API_KEY="your_openai_key_here"
+
+# Required for Claude functionality
+export CLAUDE_API_KEY="your_claude_key_here"
+
+# Optional configuration
+export PAPER2CODE_OUTPUT_DIR="./generated_code"
+```
 
 ## Quick Start
 
@@ -197,6 +247,56 @@ Text:
 
 ## Usage Examples
 
+### Basic Extraction
+
+Extract code from a single research paper with automatic settings:
+
+```bash
+paper2code-rs extract -i research_paper.pdf
+```
+
+### Processing Multiple Papers
+
+Extract code from multiple research papers in one command:
+
+```bash
+paper2code-rs extract -i paper1.pdf paper2.pdf paper3.pdf -o ./extracted_code
+```
+
+### Targeting a Specific Language
+
+Force code generation in a specific programming language:
+
+```bash
+paper2code-rs extract -i algorithm_paper.pdf --language python
+```
+
+### Using Different LLM Strategies
+
+Experiment with different LLM strategies for better results:
+
+```bash
+# Use OpenAI models only
+paper2code-rs extract -i paper.pdf --strategy openai_only
+
+# Use Claude models only
+paper2code-rs extract -i paper.pdf --strategy claude_only
+
+# Try OpenAI first, fall back to Claude
+paper2code-rs extract -i paper.pdf --strategy openai_first
+
+# Compare and merge results from both models
+paper2code-rs extract -i paper.pdf --strategy compare_and_merge
+```
+
+### Batch Processing with Custom Configuration
+
+Process multiple papers with a custom configuration file:
+
+```bash
+paper2code-rs extract -i ./papers/*.pdf -o ./code -c ./custom_config.toml
+```
+
 ### Process a Single PDF
 
 ```bash
@@ -250,7 +350,26 @@ Paper2Code supports several strategies for using LLMs:
 5. **Claude First, OpenAI Second**: Try Claude first, fall back to OpenAI if unsuccessful
 6. **Compare and Merge**: Use both models and merge the results for optimal output
 
-Each task type (code detection, improvement, generation, documentation, etc.) can have different LLM preferences configured in the adaptive strategy.
+Each task type (code detection, improvement, generation, documentation, etc.) can have different LLM preferences configured in the adaptive strategy. The system now intelligently adjusts LLM selection based on the detected computational domain of your research paper.
+
+## Computational Domains
+
+Paper2Code now automatically detects and optimizes code generation for various computational domains:
+
+| Domain | Description | Preferred Languages | Key Frameworks |
+|--------|-------------|---------------------|----------------|
+| Numerical Computing | Algorithms for numerical methods and simulations | Python, C++, Rust | NumPy, SciPy, ndarray |
+| Chip Design | Hardware design and optimization | C/C++, Rust | Verilog, SystemVerilog, Chisel |
+| Bioinformatics | Genomic data processing and analysis | Python, Rust, Nextflow | Biopython, rust-bio |
+| Quantum Computing | Quantum algorithms and circuits | Python, Rust | Qiskit, Cirq, PennyLane |
+| Digital Twins | Simulation of physical systems | Python, Rust, C++ | SimPy, Mesa, AnyLogic |
+| Classical ML | Traditional machine learning algorithms | Python, Rust | scikit-learn, XGBoost, Linfa |
+| Deep Learning | Neural network architectures and training | Python, Rust | PyTorch, TensorFlow, tch-rs |
+| Transformers | Large language models and attention mechanisms | Python, Rust | Hugging Face, LangChain |
+| Computational Physics | Physics simulations and modeling | C++, Python, Rust | NumPy, SciPy, LAMMPS |
+| Computational Finance | Financial modeling and analysis | C++, Python, Rust | QuantLib, numpy-financial |
+
+When a domain is detected, Paper2Code selects the appropriate LLM, templates, and frameworks to generate the highest quality code for that specific domain.
 
 ## Troubleshooting
 

@@ -75,7 +75,7 @@ impl PromptBuilder {
     
     /// Get default prompt template for converting code snippets to executable code
     pub fn default_code_extraction_template() -> String {
-        r#"
+        r"
 You are a skilled programmer tasked with converting research paper code snippets into fully executable code.
 
 The following code was extracted from a research paper:
@@ -94,12 +94,12 @@ Please convert this code snippet into fully executable {{LANGUAGE}} code. Follow
 6. Add code documentation following best practices for {{LANGUAGE}}
 
 Your output should be ONLY the complete, executable code. Do not include any explanations outside of code comments.
-"#.to_string()
+".to_string()
     }
     
     /// Template for code block detection and improvement
     pub fn code_detection_template() -> String {
-        r#"
+        r"
 You are a skilled programmer tasked with identifying and extracting code from research papers.
 
 The following text was extracted from a research paper:
@@ -116,12 +116,12 @@ Please identify any code blocks in this text. For each code block:
 
 Your output should be ONLY the extracted, formatted code blocks. 
 Return each block with the language identified (if possible) in markdown code block format.
-"#.to_string()
+".to_string()
     }
     
     /// Template for adding documentation to code
     pub fn documentation_template() -> String {
-        r#"
+        r"
 You are a skilled technical writer tasked with documenting code from a research paper.
 
 The following code was extracted and converted from a research paper:
@@ -140,12 +140,12 @@ Please add comprehensive documentation to this code. Follow these guidelines:
 6. Do not change the functionality of the code
 
 Your output should be ONLY the documented code.
-"#.to_string()
+".to_string()
     }
     
     /// Template for bug fixing
     pub fn bug_fixing_template() -> String {
-        r#"
+        r"
 You are a skilled programmer tasked with fixing bugs in code extracted from a research paper.
 
 The following code was extracted from a research paper:
@@ -164,12 +164,12 @@ This code may contain bugs, errors, or inconsistencies. Please fix any issues wi
 6. Add comments explaining your fixes
 
 Your output should be ONLY the fixed, executable code.
-"#.to_string()
+".to_string()
     }
     
     /// Template for comparing and merging implementations
     pub fn merge_implementations_template() -> String {
-        r#"
+        r"
 You are a skilled programmer tasked with merging two implementations of the same algorithm from a research paper.
 
 Original code from the paper:
@@ -197,6 +197,6 @@ Please merge these implementations into a single, optimized version. Follow thes
 6. Follow best practices for {{LANGUAGE}}
 
 Your output should be ONLY the merged, executable code.
-"#.to_string()
+".to_string()
     }
 }

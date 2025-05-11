@@ -124,19 +124,53 @@ impl CodeDetector {
     pub fn detect_code_blocks(&self, text: &str) -> Vec<CodeBlock> {
         let mut code_blocks = Vec::new();
         
-        // Find code blocks using general patterns
+        // Special case for Python-style indented code blocks
+        // This is a common pattern in research papers
+        let python_pattern = Regex::new(r"(?m)(def\s+\w+\s*\(.*\)\s*:|class\s+\w+.*:)\s*\n((\s{4,}|\t).+\n)+").unwrap();
+        for capture in python_pattern.captures_iter(text) {
+            if let Some(code_match) = capture.get(0) {
+                let content = code_match.as_str().to_string();
+                let text_before = &text[..code_match.start()];
+                let line_start = text_before.chars().filter(|&c| c == '\n').count() + 1;
+                let line_count = content.lines().count();
+                
+                if line_count >= self.min_lines {
+                    let block = CodeBlock::new(
+                        content,
+                        Some("python".to_string()),
+                        line_start,
+                        line_start + line_count,
+                        None
+                    ).with_confidence(0.9);
+                    
+                    code_blocks.push(block);
+                }
+            }
+        }
+        
+        // Try all patterns for code detection
         for pattern in &self.patterns {
-            for capture in pattern.captures_iter(text) {
-                if let Some(code_match) = capture.get(0) {
-                    let content = code_match.as_str().to_string();
+            let captures = pattern.captures_iter(text);
+            
+            for capture_match in captures {
+                if let Some(code_match) = capture_match.get(0) {
+                    // Extract the code content
+                    let content = if let Some(capture) = capture_match.name("code") {
+                        capture.as_str().to_string()
+                    } else if capture_match.len() > 2 && capture_match.get(2).is_some() {
+                        // For patterns like indented code or line-numbered code
+                        capture_match.get(2).unwrap().as_str().to_string()
+                    } else {
+                        code_match.as_str().to_string()
+                    };
                     
                     // Extract language if available (from pattern like ```python)
-                    let language = capture.name("lang").map(|m| m.as_str().to_string());
+                    let language = capture_match.name("lang").map(|m| m.as_str().to_string());
                     
                     // Count line numbers for the block
                     let text_before = &text[..code_match.start()];
                     let line_start = text_before.chars().filter(|&c| c == '\n').count() + 1;
-                    let line_count = content.chars().filter(|&c| c == '\n').count();
+                    let line_count = content.lines().count();
                     let line_end = line_start + line_count;
                     
                     // Skip if block is too short

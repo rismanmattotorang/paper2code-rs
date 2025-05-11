@@ -5,7 +5,6 @@ use paper2code_rs::{
         prompt::PromptBuilder,
     },
     config::AppConfig,
-    error::AppError,
 };
 use anyhow::Result;
 use std::path::PathBuf;

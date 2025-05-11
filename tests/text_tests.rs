@@ -64,7 +64,7 @@ mod tests {
             "More regular text here.".to_string(),
         ];
         
-        let blocks = processor.process_chunks(&chunks).await?;
+        let blocks = processor.process_chunks(&chunks)?;
         assert_eq!(blocks.len(), 1, "Should detect exactly one code block");
         
         let block = &blocks[0];

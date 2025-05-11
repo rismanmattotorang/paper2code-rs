@@ -9,6 +9,7 @@ use std::time::Instant;
 use crate::error::{AppError, Result};
 use crate::llm::client::LlmClient;
 use crate::llm::prompt::PromptBuilder;
+use crate::text::ComputationalDomain;
 
 /// Defines different types of LLM tasks in the code extraction pipeline
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -21,6 +22,9 @@ pub enum TaskType {
     
     /// Converting code snippets to executable code
     CodeGeneration,
+    
+    /// Domain-specific code generation and optimization
+    DomainSpecificGeneration(ComputationalDomain),
     
     /// Adding documentation to generated code
     Documentation,
@@ -36,6 +40,9 @@ pub enum TaskType {
     
     /// Adding tests to verify code correctness
     TestGeneration,
+    
+    /// Detecting the computational domain of a paper
+    DomainDetection,
 }
 
 impl fmt::Display for TaskType {
@@ -44,11 +51,13 @@ impl fmt::Display for TaskType {
             Self::CodeDetection => write!(f, "Code Detection"),
             Self::CodeImprovement => write!(f, "Code Improvement"),
             Self::CodeGeneration => write!(f, "Code Generation"),
+            Self::DomainSpecificGeneration(domain) => write!(f, "Domain-Specific Generation ({})", domain),
             Self::Documentation => write!(f, "Documentation"),
             Self::BugFixing => write!(f, "Bug Fixing"),
             Self::PerformanceOptimization => write!(f, "Performance Optimization"),
             Self::SafetyEnhancement => write!(f, "Safety Enhancement"),
             Self::TestGeneration => write!(f, "Test Generation"),
+            Self::DomainDetection => write!(f, "Domain Detection"),
         }
     }
 }
@@ -93,7 +102,7 @@ impl Default for AdaptivePreference {
         Self {
             openai_weight: 0.5,
             claude_weight: 0.5,
-        }
+}
     }
 }
 
@@ -166,26 +175,28 @@ impl LlmStrategy {
             LlmStrategy::ClaudeFirstOpenAiSecond => "claude",
             LlmStrategy::CompareAndMerge => "both",
             LlmStrategy::Adaptive {
-                code_detection,
-                code_improvement,
-                code_generation,
-                documentation,
-                bug_fixing,
-                performance_optimization,
-                safety_enhancement,
-                test_generation,
+            code_detection,
+            code_improvement,
+            code_generation,
+            documentation,
+            bug_fixing,
+            performance_optimization,
+            safety_enhancement,
+            test_generation,
             } => {
-                let preference = match task {
-                    TaskType::CodeDetection => code_detection,
-                    TaskType::CodeImprovement => code_improvement,
-                    TaskType::CodeGeneration => code_generation,
-                    TaskType::Documentation => documentation,
-                    TaskType::BugFixing => bug_fixing,
-                    TaskType::PerformanceOptimization => performance_optimization,
-                    TaskType::SafetyEnhancement => safety_enhancement,
-                    TaskType::TestGeneration => test_generation,
-                };
-                
+            let preference = match task {
+                TaskType::CodeDetection => code_detection,
+                TaskType::CodeImprovement => code_improvement,
+                TaskType::CodeGeneration => code_generation,
+                TaskType::DomainSpecificGeneration(_) => code_generation, // Use code generation settings for domain-specific tasks
+                TaskType::Documentation => documentation,
+                TaskType::BugFixing => bug_fixing,
+                TaskType::PerformanceOptimization => performance_optimization,
+                TaskType::SafetyEnhancement => safety_enhancement,
+                TaskType::TestGeneration => test_generation,
+                TaskType::DomainDetection => code_detection, // Use code detection settings for domain detection
+            };
+            
                 if preference.openai_weight > preference.claude_weight {
                     "openai"
                 } else if preference.claude_weight > preference.openai_weight {
@@ -219,9 +230,9 @@ impl LlmStrategy {
             LlmStrategy::ClaudeFirstOpenAiSecond => Some("openai"),
             LlmStrategy::CompareAndMerge => None,
             LlmStrategy::Adaptive { .. } => None,
-        }
     }
-    
+}
+
     /// Check if both LLMs should be used
     pub fn should_use_both(&self, task: &TaskType) -> bool {
         match self {
@@ -240,11 +251,13 @@ impl LlmStrategy {
                     TaskType::CodeDetection => code_detection,
                     TaskType::CodeImprovement => code_improvement,
                     TaskType::CodeGeneration => code_generation,
+                    TaskType::DomainSpecificGeneration(_) => code_generation, // Use code generation settings
                     TaskType::Documentation => documentation,
                     TaskType::BugFixing => bug_fixing,
                     TaskType::PerformanceOptimization => performance_optimization,
                     TaskType::SafetyEnhancement => safety_enhancement,
                     TaskType::TestGeneration => test_generation,
+                    TaskType::DomainDetection => code_detection, // Use code detection settings
                 };
                 
                 (preference.openai_weight - preference.claude_weight).abs() < 0.1
@@ -275,11 +288,30 @@ impl LlmStrategy {
                     TaskType::CodeDetection => code_detection,
                     TaskType::CodeImprovement => code_improvement,
                     TaskType::CodeGeneration => code_generation,
+                    TaskType::DomainSpecificGeneration(domain) => {
+                        // We need a static reference to return, so we'll use code_generation as the base
+                        // but adjust our client selection logic based on the domain
+                        match *domain {
+                            ComputationalDomain::DeepLearning | 
+                            ComputationalDomain::Transformers | 
+                            ComputationalDomain::ClassicalML => {
+                                // Claude may be better at ML domains, but return the existing preference
+                                // and we'll adjust weights in language selection
+                                code_generation
+                            },
+                            ComputationalDomain::QuantumComputing => {
+                                // OpenAI may be better at quantum computing
+                                code_generation
+                            },
+                            _ => code_generation, // Default to standard code generation preference
+                        }
+                    },
                     TaskType::Documentation => documentation,
                     TaskType::BugFixing => bug_fixing,
                     TaskType::PerformanceOptimization => performance_optimization,
                     TaskType::SafetyEnhancement => safety_enhancement,
                     TaskType::TestGeneration => test_generation,
+                    TaskType::DomainDetection => code_detection, // Use code detection preference
                 };
                 
                 // Consider language preferences (could be expanded)
@@ -347,14 +379,12 @@ impl DynamicLearningStrategy {
             } else {
                 metrics.openai_failure += 1;
             }
+        } else if success {
+            metrics.claude_success += 1;
         } else {
-            if success {
-                metrics.claude_success += 1;
-            } else {
-                metrics.claude_failure += 1;
-            }
+            metrics.claude_failure += 1;
         }
-        
+    
         // Update exploration rate
         let mut rate = self.exploration_rate.write().await;
         *rate = (*rate * self.exploration_decay).max(self.min_exploration_rate);
@@ -376,14 +406,14 @@ impl DynamicLearningStrategy {
         
         let claude_success_rate = if metrics.claude_success + metrics.claude_failure > 0 {
             metrics.claude_success as f64 / (metrics.claude_success + metrics.claude_failure) as f64
-        } else {
+                } else {
             0.5
-        };
+                };
         
         let total = openai_success_rate + claude_success_rate;
         let openai_weight = if total > 0.0 {
             openai_success_rate / total
-        } else {
+                } else {
             0.5
         };
         
@@ -454,8 +484,8 @@ impl EnhancedMultiLlmClient {
             _ => {
                 // Default to openai if no clear preference
                 debug!("No clear preference, defaulting to openai");
-                self.generate_with_openai(prompt).await
-            }
+                    self.generate_with_openai(prompt).await
+                }
         };
         
         let _elapsed = start_time.elapsed();
@@ -563,21 +593,21 @@ impl EnhancedMultiLlmClient {
             _ => {
                 // Default merge prompt for other task types
                 PromptBuilder::new()
-                    .with_template(
+                .with_template(
                         "You have two different implementations of code extracted from a research paper.\n\
-                         Merge these implementations, taking the best parts of each to create a single, \
+                     Merge these implementations, taking the best parts of each to create a single, \
                          optimized, well-documented, and fully executable solution.\n\n\
-                         Original code snippet from the paper:\n\
-                         ```{{LANGUAGE}}\n{{ORIGINAL_CODE}}\n```\n\n\
-                         OpenAI implementation:\n\
-                         ```{{LANGUAGE}}\n{{OPENAI_CODE}}\n```\n\n\
-                         Claude implementation:\n\
-                         ```{{LANGUAGE}}\n{{CLAUDE_CODE}}\n```\n\n\
-                         Return only the merged, improved code."
-                    )
+                     Original code snippet from the paper:\n\
+                     ```{{LANGUAGE}}\n{{ORIGINAL_CODE}}\n```\n\n\
+                     OpenAI implementation:\n\
+                     ```{{LANGUAGE}}\n{{OPENAI_CODE}}\n```\n\n\
+                     Claude implementation:\n\
+                     ```{{LANGUAGE}}\n{{CLAUDE_CODE}}\n```\n\n\
+                     Return only the merged, improved code."
+                )
                     .with_replacement("{{ORIGINAL_CODE}}", openai_code)
                     .with_replacement("{{OPENAI_CODE}}", claude_code)
-                    .with_replacement("{{CLAUDE_CODE}}", claude_code)
+                .with_replacement("{{CLAUDE_CODE}}", claude_code)
                     .with_replacement("{{LANGUAGE}}", "rust")
             }
         };
